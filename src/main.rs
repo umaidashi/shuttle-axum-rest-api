@@ -5,7 +5,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{Executor, PgPool};
 
 async fn hello_world() -> &'static str {
@@ -31,8 +31,13 @@ async fn main(#[shuttle_shared_db::Postgres] db: PgPool) -> shuttle_axum::Shuttl
 
     let router = Router::new()
         .route("/", get(hello_world))
-        .route("/users", get(retrieve_all_records))
-        .route("/users/{id}", get(retrieve_record_by_id))
+        .route("/users", get(retrieve_all_records).post(create_record))
+        .route(
+            "/users/{id}",
+            get(retrieve_record_by_id)
+                .delete(delete_record_by_id)
+                .put(update_record_by_id),
+        )
         .with_state(state);
 
     Ok(router.into())
@@ -77,4 +82,80 @@ async fn retrieve_record_by_id(
     };
 
     Ok(Json(res))
+}
+
+#[derive(Deserialize)]
+pub struct UserSubmission {
+    name: String,
+    age: i32,
+}
+
+async fn create_record(
+    State(state): State<AppState>,
+    Json(json): Json<UserSubmission>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    if let Err(e) = sqlx::query("INSERT INTO USERS (name, age) VALUES ($1, $2)")
+        .bind(json.name)
+        .bind(json.age)
+        .execute(&state.db)
+        .await
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error while inserting a record: {e}"),
+        ));
+    }
+
+    Ok(StatusCode::OK)
+}
+
+async fn delete_record_by_id(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    if let Err(e) = sqlx::query_as::<_, User>("DELETE FROM USERS WHERE ID = $1")
+        .bind(id)
+        .fetch_all(&state.db)
+        .await
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error while deleting a record: {e}"),
+        ));
+    }
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+pub struct UpdateRecord {
+    name: Option<String>,
+    age: Option<i32>,
+}
+
+async fn update_record_by_id(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    Json(json): Json<UserSubmission>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    if let Err(e) = sqlx::query(
+        "UPDATE USERS (name, age)
+            SET name = (case when $1 is not null then $1 else name end),
+            age = (case when $2 is not null then $2 else age end)
+            WHERE
+            id = $3",
+    )
+    .bind(json.name)
+    .bind(json.age)
+    .bind(id)
+    .execute(&state.db)
+    .await
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error while inserting a record: {e}"),
+        ));
+    }
+
+    Ok(StatusCode::OK)
 }
